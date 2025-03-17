@@ -2,165 +2,203 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdint.h>
 
 #define SCREEN_WIDTH 640
 #define SCREEN_HEIGHT 480
-#define MAP_WIDTH 8
-#define MAP_HEIGHT 8
-#define MOVE_SPEED 0.05f
-#define ROTATE_SPEED 1.5f
+#define MAP_WIDTH 12
+#define MAP_HEIGHT 12
+#define MOVE_SPEED 0.1f
+#define ROTATE_SPEED 3.0f
+#define TEXTURE_WIDTH 32
+#define TEXTURE_HEIGHT 32
+#define TILE_SCALE 0.5f
 
-// Simple 8x8 map (1 = wall, 0 = empty)
+#include "bricks.c"
+
 int map[MAP_WIDTH][MAP_HEIGHT] = {
-    {1, 1, 1, 1, 1, 1, 1, 1},
-    {1, 0, 0, 0, 0, 0, 0, 1},
-    {1, 0, 0, 0, 0, 0, 0, 1},
-    {1, 0, 0, 1, 1, 0, 0, 1},
-    {1, 0, 0, 0, 0, 0, 0, 1},
-    {1, 0, 0, 0, 0, 0, 0, 1},
-    {1, 0, 0, 0, 0, 0, 0, 1},
-    {1, 1, 1, 1, 1, 1, 1, 1}
+    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1},
+    {1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1},
+    {1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1},
+    {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1},
+    {1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1},
+    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
 };
 
 typedef struct {
-    float x, y;       // Player position
-    float angle;      // View direction (degrees)
+    float x, y;
+    float angle;
 } Player;
 
-void drawScene(SDL_Renderer* renderer, Player player) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
+SDL_Texture* loadTextureFromData(SDL_Renderer* renderer, const uint32_t* data, int width, int height) {
+    SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)data, width, height, 32, width * 4, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+    if (!surface) {
+        printf("Unable to create surface from data: %s\n", SDL_GetError());
+        return NULL;
+    }
+    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+    return texture;
+}
 
-    float fov = 60.0f;  // Field of view
+void drawScene(SDL_Renderer* renderer, Player player, SDL_Texture* brickTexture) {
+    SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255); // Gray floor
+    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 100, 255); // Blue ceiling
+    SDL_Rect ceiling = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT / 2};
+    SDL_RenderFillRect(renderer, &ceiling);
+
+    float fov = 60.0f;
     float halfFov = fov / 2.0f;
 
     for (int x = 0; x < SCREEN_WIDTH; x++) {
-        // Calculate the ray's angle based on the player's view angle
-        float rayAngle = player.angle - halfFov + (fov * x / SCREEN_WIDTH);
-        float rad = rayAngle * 3.14159f / 180.0f;
+        float rayAngle = player.angle - halfFov + (fov * x / (float)SCREEN_WIDTH);
+        float rad = rayAngle * M_PI / 180.0f;
 
-        // Raycasting setup
         float rayX = player.x;
         float rayY = player.y;
-        float deltaX = cos(rad);
-        float deltaY = sin(rad);
-        float distance = 0.0f;
-        int hit = 0;
+        float distToWall = 0.0f;
+        bool hitWall = false;
+        float hitX = 0.0f;
+        bool isVertical = false;
 
-        // Cast rays until hitting a wall or going out of bounds
-        while (!hit && distance < 20.0f) { // Max distance to avoid infinite loops
-            rayX += deltaX * 0.1f;
-            rayY += deltaY * 0.1f;
-            distance += 0.1f;
+        float stepX = cosf(rad) * 0.05f;
+        float stepY = sinf(rad) * 0.05f;
+
+        while (!hitWall && distToWall < 20.0f) {
+            rayX += stepX;
+            rayY += stepY;
+            distToWall = sqrtf((rayX - player.x) * (rayX - player.x) + (rayY - player.y) * (rayY - player.y));
 
             int mapX = (int)rayX;
             int mapY = (int)rayY;
 
             if (mapX < 0 || mapX >= MAP_WIDTH || mapY < 0 || mapY >= MAP_HEIGHT) {
-                hit = 1; // Out of bounds
-            } else if (map[mapX][mapY] == 1) {
-                hit = 1; // Hit a wall
+                break;
+            }
+
+            if (map[mapX][mapY] == 1) {
+                hitWall = true;
+                float testX = rayX - stepX / 2.0f;
+                float testY = rayY - stepY / 2.0f;
+                if ((int)testX != (int)rayX) {
+                    isVertical = true;
+                    hitX = rayY;
+                } else {
+                    isVertical = false;
+                    hitX = rayX;
+                }
             }
         }
 
-        // Remove the fisheye effect: Use the raw distance to the wall
-        // No correction here: Just use the raw distance for wall height
-        int wallHeight = (int)(SCREEN_HEIGHT / distance);
-        if (wallHeight > SCREEN_HEIGHT) wallHeight = SCREEN_HEIGHT;
+        if (hitWall) {
+            if (distToWall < 0.1f) distToWall = 0.1f; // Still prevent division by zero
 
-        // Draw the wall with the calculated height
-        SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255); // Light gray walls
-        SDL_RenderDrawLine(renderer, x, (SCREEN_HEIGHT - wallHeight) / 2, 
-                          x, (SCREEN_HEIGHT + wallHeight) / 2);
+            int wallHeight = (int)(SCREEN_HEIGHT / distToWall);
+            if (wallHeight > SCREEN_HEIGHT) wallHeight = SCREEN_HEIGHT;
 
-        // Floor and ceiling rendering
-        SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255); // Dark gray floor
-        SDL_RenderDrawLine(renderer, x, SCREEN_HEIGHT / 2 + wallHeight / 2, x, SCREEN_HEIGHT);
-        SDL_SetRenderDrawColor(renderer, 0, 100, 200, 255); // Blue ceiling
-        SDL_RenderDrawLine(renderer, x, 0, x, SCREEN_HEIGHT / 2 - wallHeight / 2);
+            float texX = fmodf(hitX / TILE_SCALE, 1.0f) * TEXTURE_WIDTH;
+            if (texX < 0) texX += TEXTURE_WIDTH;
+            int texXInt = (int)texX % TEXTURE_WIDTH;
+
+            float texHeightScale = (float)wallHeight / (TEXTURE_HEIGHT / TILE_SCALE);
+            SDL_Rect srcRect = {texXInt, 0, 1, TEXTURE_HEIGHT};
+            SDL_Rect destRect = {x, (SCREEN_HEIGHT - wallHeight) / 2, 1, wallHeight};
+
+            SDL_SetTextureScaleMode(brickTexture, SDL_ScaleModeNearest);
+            SDL_RenderCopy(renderer, brickTexture, &srcRect, &destRect);
+        }
     }
+
+    SDL_RenderPresent(renderer);
 }
 
-
-
 int main() {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        printf("SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
-        return 1;
-    }
+    SDL_Init(SDL_INIT_VIDEO);
 
-    SDL_Window* window = SDL_CreateWindow("Doom-like Room",
-                                        SDL_WINDOWPOS_UNDEFINED,
-                                        SDL_WINDOWPOS_UNDEFINED,
-                                        SCREEN_WIDTH, SCREEN_HEIGHT,
-                                        SDL_WINDOW_SHOWN);
+    SDL_Window* window = SDL_CreateWindow("Cuberoom - 3D Raycaster", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
     if (!window) {
-        printf("Window could not be created! SDL_Error: %s\n", SDL_GetError());
+        printf("Window creation failed: %s\n", SDL_GetError());
         return 1;
     }
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) {
-        printf("Renderer could not be created! SDL_Error: %s\n", SDL_GetError());
+        printf("Renderer creation failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
         return 1;
     }
 
-    Player player = {2.0f, 2.0f, 0.0f}; // Start inside room
-    bool quit = false;
+    SDL_Texture* brickTexture = loadTextureFromData(renderer, bricks_data[0], TEXTURE_WIDTH, TEXTURE_HEIGHT);
+    if (!brickTexture) {
+        printf("Failed to load brick texture\n");
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    Player player = {2.0f, 2.0f, 90.0f}; // Start in open space
+    bool running = true;
     SDL_Event e;
 
-    while (!quit) {
-        while (SDL_PollEvent(&e) != 0) {
-            if (e.type == SDL_QUIT) quit = true;
+    while (running) {
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) running = false;
         }
 
         const Uint8* keys = SDL_GetKeyboardState(NULL);
-        float rad = player.angle * 3.14159265358979323f / 180.0f;
+        float dirX = cosf(player.angle * M_PI / 180.0f);
+        float dirY = sinf(player.angle * M_PI / 180.0f);
+        float perpX = -dirY;
+        float perpY = dirX;
 
-        // Movement
-        float newX = player.x;
-        float newY = player.y;
-
-        if (keys[SDL_SCANCODE_W]) { // Forward
-            newX += cos(rad) * MOVE_SPEED;
-            newY += sin(rad) * MOVE_SPEED;
+        if (keys[SDL_SCANCODE_W]) {
+            float nextX = player.x + dirX * MOVE_SPEED;
+            float nextY = player.y + dirY * MOVE_SPEED;
+            if (map[(int)nextX][(int)player.y] == 0) player.x = nextX;
+            if (map[(int)player.x][(int)nextY] == 0) player.y = nextY;
         }
-        if (keys[SDL_SCANCODE_S]) { // Backward
-            newX -= cos(rad) * MOVE_SPEED;
-            newY -= sin(rad) * MOVE_SPEED;
+        if (keys[SDL_SCANCODE_S]) {
+            float nextX = player.x - dirX * MOVE_SPEED;
+            float nextY = player.y - dirY * MOVE_SPEED;
+            if (map[(int)nextX][(int)player.y] == 0) player.x = nextX;
+            if (map[(int)player.x][(int)nextY] == 0) player.y = nextY;
         }
-        if (keys[SDL_SCANCODE_A]) { // Strafe left
-            newX += sin(rad) * MOVE_SPEED;
-            newY -= cos(rad) * MOVE_SPEED;
+        if (keys[SDL_SCANCODE_D]) {
+            float nextX = player.x + perpX * MOVE_SPEED;
+            float nextY = player.y + perpY * MOVE_SPEED;
+            if (map[(int)nextX][(int)player.y] == 0) player.x = nextX;
+            if (map[(int)player.x][(int)nextY] == 0) player.y = nextY;
         }
-        if (keys[SDL_SCANCODE_D]) { // Strafe right
-            newX -= sin(rad) * MOVE_SPEED;
-            newY += cos(rad) * MOVE_SPEED;
+        if (keys[SDL_SCANCODE_A]) {
+            float nextX = player.x - perpX * MOVE_SPEED;
+            float nextY = player.y - perpY * MOVE_SPEED;
+            if (map[(int)nextX][(int)player.y] == 0) player.x = nextX;
+            if (map[(int)player.x][(int)nextY] == 0) player.y = nextY;
         }
-        if (keys[SDL_SCANCODE_RIGHT]) { // Rotate left
-            player.angle += ROTATE_SPEED;
-            if (player.angle >= 360) player.angle -= 360;
-        }
-        if (keys[SDL_SCANCODE_LEFT]) { // Rotate right
+        if (keys[SDL_SCANCODE_LEFT]) {
             player.angle -= ROTATE_SPEED;
-            if (player.angle < 0) player.angle += 360;
+        }
+        if (keys[SDL_SCANCODE_RIGHT]) {
+            player.angle += ROTATE_SPEED;
         }
 
-        // Collision check
-        if (newX >= 0 && newX < MAP_WIDTH && newY >= 0 && newY < MAP_HEIGHT) {
-            if (map[(int)newX][(int)newY] == 0) {
-                player.x = newX;
-                player.y = newY;
-            }
-        }
-
-        drawScene(renderer, player);
-        SDL_RenderPresent(renderer);
-        SDL_Delay(16); // ~60 FPS
+        drawScene(renderer, player, brickTexture);
+        SDL_Delay(16);
     }
 
+    SDL_DestroyTexture(brickTexture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+
     return 0;
 }
